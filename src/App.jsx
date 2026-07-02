@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { storage } from "./storage";
+import { sendSms } from "./sms";
 
 /* ─────────────────────────────────────────────
    초청교회 배차 신청
@@ -10,13 +11,27 @@ import { storage } from "./storage";
 ────────────────────────────────────────────── */
 
 const STORAGE_KEY = "choChung-carBooking-v1";
+const REMEMBER_KEY = "choChung-rememberedUserId";
+
+// 차량 구분용 색상 팔레트 (캘린더/타임라인에서 차량마다 다르게 표시)
+const VEHICLE_COLORS = [
+  "#1F5C46", // pine
+  "#C88A2D", // amber
+  "#2A5C8A", // blue
+  "#B5443C", // red
+  "#6B4E9E", // purple
+  "#3E8E7E", // teal
+  "#A9762B", // brown
+  "#4C6B8A", // slate blue
+];
+const colorForIndex = (i) => VEHICLE_COLORS[i % VEHICLE_COLORS.length];
 
 const SEED = {
   users: [{ id: "admin", name: "관리자", pw: "0000", isAdmin: true }],
   vehicles: [
-    { id: "v1", name: "1호차 스타렉스", plate: "12가 3456", capacity: 12 },
-    { id: "v2", name: "2호차 카니발", plate: "34나 5678", capacity: 9 },
-    { id: "v3", name: "3호차 카운티", plate: "56다 7890", capacity: 25 },
+    { id: "v1", name: "1호차 스타렉스", plate: "12가 3456", capacity: 12, color: colorForIndex(0) },
+    { id: "v2", name: "2호차 카니발", plate: "34나 5678", capacity: 9, color: colorForIndex(1) },
+    { id: "v3", name: "3호차 카운티", plate: "56다 7890", capacity: 25, color: colorForIndex(2) },
   ],
   bookings: [],
   settings: { managerName: "차량국장", managerPhone: "010-8641-2350" },
@@ -121,21 +136,28 @@ function MonthCalendar({ bookings, vehicles, onSelectDate, selected }) {
   for (let i = 0; i < startDow; i++) cells.push(null);
   for (let d = 1; d <= days; d++) cells.push(d);
 
-  const countByDate = useMemo(() => {
-    const map = {};
-    bookings.forEach((b) => {
+  const colorsByDate = useMemo(() => {
+    const map = {}; // dateStr -> Set of vehicleId
+    bookings.filter((b) => b.status !== "rejected").forEach((b) => {
       let cur = new Date(`${b.date}T00:00:00`);
       const end = new Date(`${b.endDate || b.date}T00:00:00`);
       let guard = 0;
       while (cur <= end && guard < 60) {
         const key = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`;
-        map[key] = (map[key] || 0) + 1;
+        if (!map[key]) map[key] = new Set();
+        map[key].add(b.vehicleId);
         cur.setDate(cur.getDate() + 1);
         guard++;
       }
     });
-    return map;
-  }, [bookings]);
+    const out = {};
+    Object.keys(map).forEach((k) => {
+      out[k] = [...map[k]]
+        .map((vid) => vehicles.find((v) => v.id === vid)?.color)
+        .filter(Boolean);
+    });
+    return out;
+  }, [bookings, vehicles]);
 
   return (
     <div className="bg-white rounded-2xl p-4 shadow-sm">
@@ -161,7 +183,7 @@ function MonthCalendar({ bookings, vehicles, onSelectDate, selected }) {
         {cells.map((d, i) => {
           if (d === null) return <div key={i} />;
           const dateStr = `${cursor.y}-${pad(cursor.m + 1)}-${pad(d)}`;
-          const cnt = countByDate[dateStr] || 0;
+          const dots = colorsByDate[dateStr] || [];
           const isSel = selected === dateStr;
           const isToday = dateStr === todayStr();
           return (
@@ -173,13 +195,20 @@ function MonthCalendar({ bookings, vehicles, onSelectDate, selected }) {
               `}
             >
               <span className={`${i % 7 === 0 && !isSel ? "text-c-B5443C" : ""}`}>{d}</span>
-              {cnt > 0 && (
-                <span
-                  className={`text-[10px] leading-none mt-0.5 font-bold ${
-                    isSel ? "text-c-F0D9A8" : "text-c-C88A2D"
-                  }`}
-                >
-                  {cnt}건
+              {dots.length > 0 && (
+                <span className="flex items-center gap-0.5 mt-0.5">
+                  {dots.slice(0, 4).map((c, idx) => (
+                    <span
+                      key={idx}
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ backgroundColor: c, opacity: isSel ? 0.9 : 1 }}
+                    />
+                  ))}
+                  {dots.length > 4 && (
+                    <span className={`text-[9px] font-bold ${isSel ? "text-c-F0D9A8" : "text-c-7C877F"}`}>
+                      +{dots.length - 4}
+                    </span>
+                  )}
                 </span>
               )}
             </button>
@@ -192,7 +221,7 @@ function MonthCalendar({ bookings, vehicles, onSelectDate, selected }) {
 
 /* ───────── 하루 타임라인(시간별 현황) ───────── */
 function DayTimeline({ date, bookings, vehicles, showContact }) {
-  const dayBookings = bookings.filter((b) => dateInBookingRange(date, b));
+  const dayBookings = bookings.filter((b) => dateInBookingRange(date, b) && b.status !== "rejected");
   if (dayBookings.length === 0)
     return <div className="text-sm text-c-7C877F py-4 text-center">이 날짜에 신청된 배차가 없습니다.</div>;
 
@@ -217,7 +246,10 @@ function DayTimeline({ date, bookings, vehicles, showContact }) {
         if (vb.length === 0) return null;
         return (
           <div key={v.id} className="bg-white rounded-xl p-3 shadow-sm">
-            <div className="font-bold text-sm text-c-23302B mb-1.5">{v.name}</div>
+            <div className="font-bold text-sm text-c-23302B mb-1.5 flex items-center gap-1.5">
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: v.color || "#1F5C46" }} />
+              {v.name}
+            </div>
             {/* 24시간 타임라인 바 */}
             <div className="relative h-4 rounded-full bg-c-EDF1EC overflow-hidden mb-2">
               {vb.map((b) => {
@@ -227,8 +259,8 @@ function DayTimeline({ date, bookings, vehicles, showContact }) {
                 return (
                   <div
                     key={b.id}
-                    className="absolute top-0 h-full bg-c-1F5C46"
-                    style={{ left: `${l}%`, width: `${Math.max(w, 2)}%` }}
+                    className="absolute top-0 h-full"
+                    style={{ left: `${l}%`, width: `${Math.max(w, 2)}%`, backgroundColor: v.color || "#1F5C46" }}
                   />
                 );
               })}
@@ -236,7 +268,7 @@ function DayTimeline({ date, bookings, vehicles, showContact }) {
             {vb.map((b) => {
               const { dispStart, dispEnd, multiDay } = displayRange(b);
               return (
-                <div key={b.id} className="flex items-center justify-between text-sm py-1 border-t border-c-F0F3EF">
+                <div key={b.id} className={`flex items-center justify-between text-sm py-1 border-t border-c-F0F3EF ${b.status === "pending" ? "opacity-60" : ""}`}>
                   <div>
                     <span className="font-semibold text-c-1F5C46">
                       {dispStart}–{dispEnd === "24:00" ? "24:00(익일)" : dispEnd}
@@ -251,6 +283,9 @@ function DayTimeline({ date, bookings, vehicles, showContact }) {
                     )}
                     {b.seriesId && (
                       <span className="ml-1 text-[10px] font-bold text-c-2A5C8A">[매주반복]</span>
+                    )}
+                    {b.status === "pending" && (
+                      <span className="ml-1 text-[10px] font-bold text-c-6B5A2E">[승인대기]</span>
                     )}
                   </div>
                   {showContact && b.phone && (
@@ -282,6 +317,8 @@ export default function App() {
   const [modal, setModal] = useState(null); // {type, payload}
   const [selDate, setSelDate] = useState(todayStr());
   const [editBooking, setEditBooking] = useState(null);
+  const [reminderBanner, setReminderBanner] = useState(null); // 5분 전 알림 대상 예약
+  const notifiedRef = useRef(new Set()); // 중복 알림 방지
 
   const showToast = (m) => {
     setToast(m);
@@ -305,12 +342,146 @@ export default function App() {
     })();
   }, []);
 
+  /* 로그인 기억하기: 데이터가 처음 로드된 시점에 저장된 아이디가 있으면 자동 로그인 */
+  const autoLoginDoneRef = useRef(false);
+  useEffect(() => {
+    if (!data || autoLoginDoneRef.current) return;
+    autoLoginDoneRef.current = true;
+    try {
+      const savedId = localStorage.getItem(REMEMBER_KEY);
+      if (savedId) {
+        const u = data.users.find((x) => x.id === savedId);
+        if (u) {
+          setUser(u);
+          setView(u.isAdmin ? "admin" : "main");
+        } else {
+          localStorage.removeItem(REMEMBER_KEY);
+        }
+      }
+    } catch {}
+  }, [data]);
+
+  /* 운행 5분 전 알림: 로그인한 운전자 본인의 오늘 예약을 30초마다 확인합니다.
+     이 방식은 앱(브라우저 탭)이 열려있을 때만 동작하는 한계가 있습니다. */
+  useEffect(() => {
+    if (!user || !data) return;
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+    const check = () => {
+      const now = new Date();
+      const nowStr = todayStr();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      (data.bookings || []).forEach((b) => {
+        if (b.userId !== user.id) return;
+        if (b.status !== "approved") return; // 승인된 예약만 알림 대상
+        if (b.pre) return; // 이미 운행전정보 입력함
+        if (b.date !== nowStr) return; // 오늘 시작하는 예약만 대상
+        const [sh, sm] = b.start.split(":").map(Number);
+        const startMin = sh * 60 + sm;
+        const diff = startMin - nowMin;
+        if (diff <= 5 && diff >= -1 && !notifiedRef.current.has(b.id)) {
+          notifiedRef.current.add(b.id);
+          setReminderBanner(b);
+          if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+            const v = data.vehicles.find((x) => x.id === b.vehicleId);
+            try {
+              new Notification("🚐 배차 알림", {
+                body: `${v?.name || "차량"} 운행이 곧 시작됩니다 (${b.start}). 운행전 정보를 입력해 주세요.`,
+              });
+            } catch {}
+          }
+        }
+      });
+    };
+    check();
+    const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
+  }, [user, data]);
+
+  /* 새 배차 신청 알림: 관리자가 앱을 열어두고 있는 동안, 새로 들어온 승인대기 신청을 30초마다 확인합니다.
+     운전자 알림과 마찬가지로 앱(브라우저 탭)이 열려있을 때만 동작합니다. */
+  const adminNotifiedRef = useRef(new Set());
+  useEffect(() => {
+    if (!user?.isAdmin || !data) return;
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+    // 처음 관리자 모드에 들어왔을 때 이미 쌓여있던 대기 건은 알림을 새로 띄우지 않도록 미리 표시
+    if (adminNotifiedRef.current.size === 0) {
+      (data.bookings || []).forEach((b) => {
+        if (b.status === "pending") adminNotifiedRef.current.add(b.id);
+      });
+    }
+    const check = () => {
+      (data.bookings || []).forEach((b) => {
+        if (b.status !== "pending") return;
+        if (adminNotifiedRef.current.has(b.id)) return;
+        adminNotifiedRef.current.add(b.id);
+        const v = data.vehicles.find((x) => x.id === b.vehicleId);
+        showToast(`🔔 새 배차 신청: ${v?.name || "차량"} · ${b.userName}`);
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try {
+            new Notification("🔔 새 배차 신청", {
+              body: `${v?.name || "차량"} · ${b.date} ${b.start} · 신청자 ${b.userName}`,
+            });
+          } catch {}
+        }
+      });
+    };
+    const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
+  }, [user, data]);
+
   const persist = async (next) => {
     setData(next);
     try {
       await storage.set(STORAGE_KEY, JSON.stringify(next));
     } catch (e) {
       showToast("저장 중 오류가 발생했습니다.");
+    }
+  };
+
+  const approveBooking = async (b) => {
+    // 최신 데이터로 다시 확인 (그 사이 다른 신청이 먼저 승인됐을 수 있음)
+    let latest = data;
+    try {
+      const r = await storage.get(STORAGE_KEY);
+      latest = JSON.parse(r.value);
+    } catch {}
+    const clash = latest.bookings.some(
+      (x) =>
+        x.id !== b.id &&
+        x.vehicleId === b.vehicleId &&
+        x.status === "approved" &&
+        rangeOverlap(b.date, b.start, b.endDate, b.end, x.date, x.start, x.endDate, x.end)
+    );
+    if (clash) return showToast("이미 같은 시간에 승인된 배차가 있습니다. 먼저 그 신청을 확인해 주세요.");
+
+    const nextBookings = latest.bookings.map((x) => (x.id === b.id ? { ...x, status: "approved", adminNote: null } : x));
+    await persist({ ...latest, bookings: nextBookings });
+    showToast("승인되었습니다.");
+
+    if (b.phone) {
+      const v = latest.vehicles.find((x) => x.id === b.vehicleId);
+      sendSms(b.phone, `[초청교회 배차] ${v?.name || "차량"} ${b.date} ${b.start} 신청이 승인되었습니다.`);
+    }
+  };
+
+  const rejectBooking = async (b, note) => {
+    let latest = data;
+    try {
+      const r = await storage.get(STORAGE_KEY);
+      latest = JSON.parse(r.value);
+    } catch {}
+    const nextBookings = latest.bookings.map((x) => (x.id === b.id ? { ...x, status: "rejected", adminNote: note || null } : x));
+    await persist({ ...latest, bookings: nextBookings });
+    showToast("반려되었습니다.");
+
+    if (b.phone) {
+      const v = latest.vehicles.find((x) => x.id === b.vehicleId);
+      const noteText = note ? ` (사유: ${note})` : "";
+      sendSms(b.phone, `[초청교회 배차] ${v?.name || "차량"} ${b.date} ${b.start} 신청이 반려되었습니다.${noteText}`);
     }
   };
 
@@ -335,6 +506,10 @@ export default function App() {
       if (!u) return showToast("아이디 또는 비밀번호가 맞지 않습니다.");
       setUser(u);
       setView(u.isAdmin ? "admin" : "main");
+      try {
+        if (remember) localStorage.setItem(REMEMBER_KEY, u.id);
+        else localStorage.removeItem(REMEMBER_KEY);
+      } catch {}
     };
 
     return (
@@ -431,6 +606,9 @@ export default function App() {
           onClick={() => {
             setUser(null);
             setView("login");
+            try {
+              localStorage.removeItem(REMEMBER_KEY);
+            } catch {}
           }}
         >
           로그아웃
@@ -442,7 +620,7 @@ export default function App() {
   /* ── 메인 페이지 ── */
   const MainPage = () => {
     const todays = bookings
-      .filter((b) => dateInBookingRange(todayStr(), b))
+      .filter((b) => dateInBookingRange(todayStr(), b) && b.status === "approved")
       .sort((a, b) => a.start.localeCompare(b.start));
 
     return (
@@ -478,9 +656,16 @@ export default function App() {
                 {todays.map((b) => {
                   const v = vehicles.find((x) => x.id === b.vehicleId);
                   return (
-                    <div key={b.id} className="bg-white rounded-xl p-3 shadow-sm flex justify-between items-center">
+                    <div
+                      key={b.id}
+                      className="bg-white rounded-xl p-3 shadow-sm flex justify-between items-center border-l-4"
+                      style={{ borderLeftColor: v?.color || "#1F5C46" }}
+                    >
                       <div>
-                        <div className="font-bold text-sm text-c-1F5C46">{v?.name || "차량"}</div>
+                        <div className="font-bold text-sm text-c-1F5C46 flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: v?.color || "#1F5C46" }} />
+                          {v?.name || "차량"}
+                        </div>
                         <div className="text-sm text-c-54615A">
                           {b.start}–{b.end} · 운전 {b.userName}
                         </div>
@@ -534,6 +719,7 @@ export default function App() {
         (b) =>
           b.vehicleId === v.id &&
           b.id !== e?.id &&
+          b.status === "approved" &&
           rangeOverlap(startDate, start, endDate, end, b.date, b.start, b.endDate, b.end)
       );
       return { ...v, conflict };
@@ -567,12 +753,16 @@ export default function App() {
           (b) =>
             b.vehicleId === vehicleId &&
             b.id !== e?.id &&
+            b.status === "approved" &&
             rangeOverlap(occ.date, start, occ.endDate, end, b.date, b.start, b.endDate, b.end)
         )
       );
       if (conflictDate)
-        return showToast(`${fmtDate(conflictDate.date)}에 이미 겹치는 배차가 있습니다. 날짜나 차량을 확인해 주세요.`);
+        return showToast(`${fmtDate(conflictDate.date)}에 이미 승인된 배차가 있습니다. 날짜나 차량을 확인해 주세요.`);
 
+      // 관리자가 만들면 바로 승인, 운전자가 만들면 승인 대기.
+      // 운전자가 기존(승인됨 포함) 예약을 수정하면 내용이 바뀌었으니 다시 승인 대기로 돌립니다.
+      const status = user.isAdmin ? "approved" : "pending";
       const seriesId = recurring && occurrences.length > 1 ? uid() : null;
       const baseRec = {
         vehicleId,
@@ -584,6 +774,8 @@ export default function App() {
         pre: null, post: null,
         createdAt: Date.now(),
         seriesId,
+        status,
+        adminNote: null,
       };
 
       const newRecords = occurrences.map((occ) => ({
@@ -601,6 +793,16 @@ export default function App() {
         : [...latest.bookings, ...newRecords];
       await persist({ ...latest, bookings: nextBookings });
       setModal({ type: "saved", payload: { count: newRecords.length } });
+
+      // 운전자가 새로 신청(대기중)하면 차량국장(관리자)에게 문자로 알립니다.
+      if (!user.isAdmin && status === "pending" && settings.managerPhone) {
+        const v = vehicles.find((x) => x.id === vehicleId);
+        const countText = newRecords.length > 1 ? ` 외 ${newRecords.length - 1}건(매주반복)` : "";
+        sendSms(
+          settings.managerPhone,
+          `[초청교회 배차] 새 신청: ${v?.name || "차량"} ${startDate} ${start} · ${user.name}${countText}`
+        );
+      }
     };
 
     return (
@@ -690,7 +892,10 @@ export default function App() {
               >
                 <div className="flex justify-between items-center">
                   <div>
-                    <div className="font-bold">{v.name}</div>
+                    <div className="font-bold flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full inline-block shrink-0" style={{ backgroundColor: v.color || "#1F5C46" }} />
+                      {v.name}
+                    </div>
                     <div className={`text-xs ${vehicleId === v.id && !v.conflict ? "text-c-CFE3D6" : "text-c-7C877F"}`}>
                       {v.plate} · {v.capacity}인승
                     </div>
@@ -759,6 +964,11 @@ export default function App() {
           )}
           {mine.map((b) => {
             const v = vehicles.find((x) => x.id === b.vehicleId);
+            const statusBadge = {
+              pending: { label: "⏳ 승인대기", cls: "bg-c-FBF4E4 text-c-6B5A2E" },
+              approved: { label: "✅ 승인됨", cls: "bg-c-E9EFE9 text-c-1F5C46" },
+              rejected: { label: "❌ 반려됨", cls: "bg-c-EFEFEA text-c-B5443C" },
+            }[b.status || "approved"];
             return (
               <div key={b.id} className="bg-white rounded-2xl p-4 shadow-sm">
                 <div className="flex justify-between items-start mb-1">
@@ -772,19 +982,31 @@ export default function App() {
                     · {b.start}–{b.end}
                   </div>
                 </div>
-                {b.seriesId && (
-                  <div className="text-[10px] font-bold text-c-2A5C8A mb-1">매주 반복 신청</div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${statusBadge.cls}`}>
+                    {statusBadge.label}
+                  </span>
+                  {b.seriesId && (
+                    <span className="text-[10px] font-bold text-c-2A5C8A">매주 반복 신청</span>
+                  )}
+                </div>
+                {b.status === "rejected" && b.adminNote && (
+                  <div className="text-xs text-c-B5443C mb-2">반려 사유: {b.adminNote}</div>
                 )}
                 <div className="text-sm text-c-54615A mb-3">
                   {b.purpose} → {b.destination} · {b.passengers}명
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Btn small kind={b.pre ? "soft" : "ghost"} onClick={() => setModal({ type: "pre", payload: b })}>
-                    운행전정보{b.pre ? " ✓" : ""}
-                  </Btn>
-                  <Btn small kind={b.post ? "soft" : "ghost"} onClick={() => setModal({ type: "post", payload: b })}>
-                    운행후정보{b.post ? " ✓" : ""}
-                  </Btn>
+                  {b.status === "approved" && (
+                    <>
+                      <Btn small kind={b.pre ? "soft" : "ghost"} onClick={() => setModal({ type: "pre", payload: b })}>
+                        운행전정보{b.pre ? " ✓" : ""}
+                      </Btn>
+                      <Btn small kind={b.post ? "soft" : "ghost"} onClick={() => setModal({ type: "post", payload: b })}>
+                        운행후정보{b.post ? " ✓" : ""}
+                      </Btn>
+                    </>
+                  )}
                   <Btn small kind="amber" onClick={() => { setEditBooking(b); setView("request"); }}>
                     수정
                   </Btn>
@@ -802,7 +1024,7 @@ export default function App() {
 
   /* ── 관리자 페이지 ── */
   const AdminPage = () => {
-    const [tab, setTab] = useState("calendar"); // calendar | vehicles | users | settings
+    const [tab, setTab] = useState("approval"); // approval | calendar | status | vehicles | users | settings
     const [vName, setVName] = useState("");
     const [vPlate, setVPlate] = useState("");
     const [vCap, setVCap] = useState("");
@@ -825,10 +1047,21 @@ export default function App() {
 
     const addVehicle = async () => {
       if (!vName.trim()) return showToast("차량 이름을 입력해 주세요.");
-      const nv = { id: uid(), name: vName.trim(), plate: vPlate.trim(), capacity: Number(vCap) || 0 };
+      const nv = {
+        id: uid(),
+        name: vName.trim(),
+        plate: vPlate.trim(),
+        capacity: Number(vCap) || 0,
+        color: colorForIndex(vehicles.length),
+      };
       await persist({ ...data, vehicles: [...vehicles, nv] });
       setVName(""); setVPlate(""); setVCap("");
       showToast("차량이 추가되었습니다.");
+    };
+
+    const changeVehicleColor = async (vId, color) => {
+      const nextVehicles = vehicles.map((v) => (v.id === vId ? { ...v, color } : v));
+      await persist({ ...data, vehicles: nextVehicles });
     };
 
     const saveAdminAccount = async () => {
@@ -868,12 +1101,19 @@ export default function App() {
       <div className="min-h-screen bg-c-F4F6F2 pb-10">
         <TopBar title="관리자 모드" />
         <div className="p-4 max-w-md mx-auto">
-          <div className="flex gap-2 mb-4">
-            {[["calendar", "배차 현황"], ["vehicles", "차량 관리"], ["users", "운전자 관리"], ["settings", "계정 설정"]].map(([k, label]) => (
+          <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+            {[
+              ["approval", `승인 대기${bookings.filter((b) => b.status === "pending").length > 0 ? ` (${bookings.filter((b) => b.status === "pending").length})` : ""}`],
+              ["calendar", "배차 현황"],
+              ["status", "차량 상태"],
+              ["vehicles", "차량 관리"],
+              ["users", "운전자 관리"],
+              ["settings", "계정 설정"],
+            ].map(([k, label]) => (
               <button
                 key={k}
                 onClick={() => setTab(k)}
-                className={`flex-1 py-2 rounded-xl text-xs font-bold ${
+                className={`shrink-0 whitespace-nowrap px-3 py-2 rounded-xl text-xs font-bold ${
                   tab === k ? "bg-c-1F5C46 text-white" : "bg-white text-c-54615A"
                 }`}
               >
@@ -882,6 +1122,55 @@ export default function App() {
             ))}
           </div>
 
+          {tab === "approval" && (
+            <div className="space-y-3">
+              {bookings.filter((b) => b.status === "pending").length === 0 && (
+                <div className="bg-white rounded-xl p-6 text-center text-sm text-c-7C877F">
+                  승인 대기중인 신청이 없습니다.
+                </div>
+              )}
+              {bookings
+                .filter((b) => b.status === "pending")
+                .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))
+                .map((b) => {
+                  const v = vehicles.find((x) => x.id === b.vehicleId);
+                  return (
+                    <div key={b.id} className="bg-white rounded-2xl p-4 shadow-sm border-l-4" style={{ borderLeftColor: v?.color || "#1F5C46" }}>
+                      <div className="flex justify-between items-start mb-1">
+                        <div className="font-extrabold text-c-23302B flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: v?.color || "#1F5C46" }} />
+                          {v?.name || "차량"}
+                        </div>
+                        <div className="text-sm text-c-54615A text-right">
+                          {b.endDate && b.endDate !== b.date ? (
+                            <>{fmtDate(b.date)}~{fmtDate(b.endDate)}</>
+                          ) : (
+                            b.date
+                          )}{" "}
+                          · {b.start}–{b.end}
+                        </div>
+                      </div>
+                      {b.seriesId && <div className="text-[10px] font-bold text-c-2A5C8A mb-1">매주 반복 신청</div>}
+                      <div className="text-sm text-c-54615A mb-1">
+                        신청자: {b.userName} {b.phone && <a href={`tel:${b.phone}`} className="underline text-c-1F5C46 font-bold ml-1">전화</a>}
+                      </div>
+                      <div className="text-sm text-c-54615A mb-3">
+                        {b.purpose} → {b.destination} · {b.passengers}명
+                      </div>
+                      <div className="flex gap-2">
+                        <Btn full kind="danger" onClick={() => setModal({ type: "confirmReject", payload: b })}>
+                          반려
+                        </Btn>
+                        <Btn full onClick={() => approveBooking(b)}>
+                          승인
+                        </Btn>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+
           {tab === "calendar" && (
             <div className="space-y-4">
               <MonthCalendar bookings={bookings} vehicles={vehicles} selected={selDate} onSelectDate={setSelDate} />
@@ -889,6 +1178,86 @@ export default function App() {
                 <h3 className="font-bold text-c-23302B mb-2 px-1">{fmtDate(selDate)} 시간대별 현황</h3>
                 <DayTimeline date={selDate} bookings={bookings} vehicles={vehicles} showContact={true} />
               </div>
+            </div>
+          )}
+
+          {tab === "status" && (
+            <div className="space-y-3">
+              {vehicles.map((v) => {
+                const now = new Date();
+                const nowStr = todayStr();
+                const nowHM = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+                const vBookings = bookings.filter((b) => b.vehicleId === v.id && b.status === "approved");
+
+                // 현재 사용중인지 (오늘 날짜가 구간에 포함되고, 첫날이면 start~, 마지막날이면 ~end, 중간날이면 종일 사용중으로 간주)
+                const current = vBookings.find((b) => {
+                  if (!dateInBookingRange(nowStr, b)) return false;
+                  const isFirst = nowStr === b.date;
+                  const isLast = nowStr === (b.endDate || b.date);
+                  const from = isFirst ? b.start : "00:00";
+                  const to = isLast ? b.end : "23:59";
+                  return nowHM >= from && nowHM <= to;
+                });
+
+                // 가장 최근 운행 기록 (운행후정보 우선, 없으면 운행전정보)
+                const past = vBookings
+                  .filter((b) => b.post || b.pre)
+                  .sort((a, b) => (b.endDate || b.date) + b.end < (a.endDate || a.date) + a.end ? -1 : 1);
+                const latest = past[0];
+                const latestInfo = latest?.post || latest?.pre;
+                const latestType = latest?.post ? "운행후" : latest?.pre ? "운행전" : null;
+
+                // 다음 예정
+                const upcoming = vBookings
+                  .filter((b) => b.date + b.start > nowStr + nowHM)
+                  .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))[0];
+
+                return (
+                  <div key={v.id} className="bg-white rounded-2xl p-4 shadow-sm">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: v.color || "#1F5C46" }} />
+                      <div className="font-extrabold text-c-23302B">{v.name}</div>
+                      <span className="text-xs text-c-7C877F">{v.plate}</span>
+                      <span className="ml-auto">
+                        {current ? (
+                          <span className="text-xs font-bold bg-c-C88A2D text-white px-2 py-0.5 rounded-full">🚗 운행중</span>
+                        ) : (
+                          <span className="text-xs font-bold bg-c-E9EFE9 text-c-54615A px-2 py-0.5 rounded-full">대기중</span>
+                        )}
+                      </span>
+                    </div>
+
+                    {current && (
+                      <div className="text-sm text-c-54615A mb-2 bg-c-FBF4E4 rounded-lg p-2">
+                        {current.userName} · {current.destination} · ~{current.end}까지
+                        {current.phone && (
+                          <a href={`tel:${current.phone}`} className="ml-2 font-bold text-c-1F5C46 underline">전화</a>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="text-xs text-c-7C877F mb-1">최근 기록{latestType ? ` (${latestType})` : ""}</div>
+                    {latestInfo ? (
+                      <div className="text-sm text-c-23302B mb-2">
+                        {fmtDate(latest.endDate || latest.date)} · {latestInfo.km || "-"}km · 연료 {latestInfo.fuel || "-"}%
+                        {latest.post?.refuel && <span className="ml-1 text-c-2A5C8A font-bold">(주유함)</span>}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-c-A9B2AA mb-2">기록 없음</div>
+                    )}
+
+                    <div className="text-xs text-c-7C877F mb-1">다음 예정</div>
+                    {upcoming ? (
+                      <div className="text-sm text-c-23302B">
+                        {fmtDate(upcoming.date)} {upcoming.start} · {upcoming.userName} · {upcoming.destination}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-c-A9B2AA">예정된 배차 없음</div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -914,14 +1283,29 @@ export default function App() {
                 <Btn full onClick={addVehicle}>차량 추가</Btn>
               </div>
               {vehicles.map((v) => (
-                <div key={v.id} className="bg-white rounded-xl p-3 shadow-sm flex justify-between items-center">
-                  <div>
-                    <div className="font-bold text-sm">{v.name}</div>
-                    <div className="text-xs text-c-7C877F">{v.plate} · {v.capacity}인승</div>
+                <div key={v.id} className="bg-white rounded-xl p-3 shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: v.color || "#1F5C46" }} />
+                      <div>
+                        <div className="font-bold text-sm">{v.name}</div>
+                        <div className="text-xs text-c-7C877F">{v.plate} · {v.capacity}인승</div>
+                      </div>
+                    </div>
+                    <Btn small kind="danger" onClick={() => setModal({ type: "confirmDeleteVehicle", payload: v })}>
+                      삭제
+                    </Btn>
                   </div>
-                  <Btn small kind="danger" onClick={() => setModal({ type: "confirmDeleteVehicle", payload: v })}>
-                    삭제
-                  </Btn>
+                  <div className="flex gap-1.5">
+                    {VEHICLE_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => changeVehicleColor(v.id, c)}
+                        className="w-5 h-5 rounded-full border-2"
+                        style={{ backgroundColor: c, borderColor: v.color === c ? "#23302B" : "transparent" }}
+                      />
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1010,15 +1394,20 @@ export default function App() {
 
     if (modal.type === "saved") {
       const cnt = modal.payload?.count || 1;
+      const isApproved = user.isAdmin;
       return (
         <Modal onClose={() => { setModal(null); setEditBooking(null); setView("main"); }}>
           <div className="text-center py-2">
-            <div className="text-4xl mb-2">✅</div>
-            <div className="font-extrabold text-lg text-c-23302B mb-1">저장되었습니다</div>
+            <div className="text-4xl mb-2">{isApproved ? "✅" : "⏳"}</div>
+            <div className="font-extrabold text-lg text-c-23302B mb-1">
+              {isApproved ? "저장되었습니다" : "신청이 접수되었습니다"}
+            </div>
             <p className="text-sm text-c-7C877F mb-4">
-              {cnt > 1
-                ? `매주 반복으로 총 ${cnt}건이 등록되었습니다. 신청현황에서 확인·수정할 수 있습니다.`
-                : "신청현황에서 언제든 확인·수정할 수 있습니다."}
+              {isApproved
+                ? cnt > 1
+                  ? `매주 반복으로 총 ${cnt}건이 등록되었습니다. 신청현황에서 확인·수정할 수 있습니다.`
+                  : "신청현황에서 언제든 확인·수정할 수 있습니다."
+                : `관리자 승인 후 배차가 확정됩니다. ${cnt > 1 ? `총 ${cnt}건이 ` : ""}신청현황에서 승인 상태를 확인할 수 있습니다.`}
             </p>
             <Btn full onClick={() => { setModal(null); setEditBooking(null); setView("main"); }}>확인</Btn>
           </div>
@@ -1091,10 +1480,43 @@ export default function App() {
       return <EditUserModal u={b} />;
     }
 
+    if (modal.type === "confirmReject") {
+      return <RejectModal b={b} />;
+    }
+
     if (modal.type === "pre" || modal.type === "post") {
       return <TripInfoModal b={b} kind={modal.type} />;
     }
     return null;
+  };
+
+  const RejectModal = ({ b }) => {
+    const [note, setNote] = useState("");
+    const v = vehicles.find((x) => x.id === b.vehicleId);
+    return (
+      <Modal onClose={() => setModal(null)}>
+        <div className="font-extrabold text-lg text-c-23302B mb-2">신청을 반려할까요?</div>
+        <p className="text-sm text-c-54615A mb-3">
+          {v?.name || "차량"} · {b.date} {b.start}–{b.end} · 신청자 {b.userName}
+        </p>
+        <Field label="반려 사유 (선택, 신청자에게 표시됩니다)">
+          <input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: 같은 시간 다른 일정과 겹침" />
+        </Field>
+        <div className="flex gap-2">
+          <Btn full kind="soft" onClick={() => setModal(null)}>취소</Btn>
+          <Btn
+            full
+            kind="danger"
+            onClick={async () => {
+              await rejectBooking(b, note.trim());
+              setModal(null);
+            }}
+          >
+            반려하기
+          </Btn>
+        </div>
+      </Modal>
+    );
   };
 
   const EditUserModal = ({ u }) => {
@@ -1204,6 +1626,27 @@ export default function App() {
       {view === "admin" && user?.isAdmin && <AdminPage />}
       <ModalHost />
       <Toast msg={toast} />
+
+      {reminderBanner && (
+        <div className="fixed bottom-4 left-4 right-4 z-40 max-w-sm mx-auto bg-c-C88A2D text-white rounded-2xl shadow-xl p-4">
+          <div className="font-extrabold mb-1">🔔 곧 운행이 시작됩니다</div>
+          <div className="text-sm mb-3">
+            {reminderBanner.start}에 {vehicles.find((v) => v.id === reminderBanner.vehicleId)?.name || "차량"} 운행 예정입니다. 운행전 정보를 입력해 주세요.
+          </div>
+          <div className="flex gap-2">
+            <Btn small kind="soft" onClick={() => setReminderBanner(null)}>나중에</Btn>
+            <Btn
+              small
+              onClick={() => {
+                setModal({ type: "pre", payload: reminderBanner });
+                setReminderBanner(null);
+              }}
+            >
+              지금 입력하기
+            </Btn>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
