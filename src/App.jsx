@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { storage } from "./storage";
-import { sendSms } from "./sms";
 
 /* ─────────────────────────────────────────────
    초청교회 배차 신청
@@ -13,18 +12,29 @@ import { sendSms } from "./sms";
 const STORAGE_KEY = "choChung-carBooking-v1";
 const REMEMBER_KEY = "choChung-rememberedUserId";
 
-// 차량 구분용 색상 팔레트 (캘린더/타임라인에서 차량마다 다르게 표시)
+// 차량 구분용 색상 팔레트 (10가지 지정색)
 const VEHICLE_COLORS = [
-  "#1F5C46", // pine
-  "#C88A2D", // amber
-  "#2A5C8A", // blue
-  "#B5443C", // red
-  "#6B4E9E", // purple
-  "#3E8E7E", // teal
-  "#A9762B", // brown
-  "#4C6B8A", // slate blue
+  { name: "검정", hex: "#1A1A1A" },
+  { name: "하양", hex: "#FFFFFF" },
+  { name: "빨강", hex: "#E5231B" },
+  { name: "주황", hex: "#F97316" },
+  { name: "초록", hex: "#16A34A" },
+  { name: "하늘", hex: "#0EA5E9" },
+  { name: "보라", hex: "#7C3AED" },
+  { name: "노랑", hex: "#FACC15" },
+  { name: "파랑", hex: "#2563EB" },
+  { name: "자주", hex: "#C2185B" },
 ];
-const colorForIndex = (i) => VEHICLE_COLORS[i % VEHICLE_COLORS.length];
+const colorForIndex = (i) => VEHICLE_COLORS[i % VEHICLE_COLORS.length].hex;
+// 차량 색상을 옅은 배경색(카드 tint)으로 변환. 하양은 옅은 회색으로 대체(흰 배경에서 안 보이는 문제 방지)
+const tintBg = (hex, alpha = 0.12) => {
+  if (!hex) return "transparent";
+  if (hex.toUpperCase() === "#FFFFFF") return "#F1F3F5";
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
 
 const SEED = {
   users: [{ id: "admin", name: "관리자", pw: "0000", isAdmin: true }],
@@ -220,7 +230,7 @@ function MonthCalendar({ bookings, vehicles, onSelectDate, selected }) {
 }
 
 /* ───────── 하루 타임라인(시간별 현황) ───────── */
-function DayTimeline({ date, bookings, vehicles, showContact }) {
+function DayTimeline({ date, bookings, vehicles, showContact, onEdit, onDelete }) {
   const dayBookings = bookings.filter((b) => dateInBookingRange(date, b) && b.status !== "rejected");
   if (dayBookings.length === 0)
     return <div className="text-sm text-c-7C877F py-4 text-center">이 날짜에 신청된 배차가 없습니다.</div>;
@@ -268,34 +278,50 @@ function DayTimeline({ date, bookings, vehicles, showContact }) {
             {vb.map((b) => {
               const { dispStart, dispEnd, multiDay } = displayRange(b);
               return (
-                <div key={b.id} className={`flex items-center justify-between text-sm py-1 border-t border-c-F0F3EF ${b.status === "pending" ? "opacity-60" : ""}`}>
-                  <div>
-                    <span className="font-semibold text-c-1F5C46">
-                      {dispStart}–{dispEnd === "24:00" ? "24:00(익일)" : dispEnd}
-                    </span>{" "}
-                    <span className="text-c-54615A">
-                      {b.userName} · {b.purpose}
-                    </span>
-                    {multiDay && (
-                      <span className="ml-1 text-[10px] font-bold text-c-C88A2D">
-                        [{fmtDate(b.date)}~{fmtDate(b.endDate)}]
+                <div key={b.id} className={`py-1.5 border-t border-c-F0F3EF ${b.status === "pending" ? "opacity-60" : ""}`}>
+                  <div className="flex items-center justify-between text-sm">
+                    <div>
+                      <span className="font-semibold text-c-1F5C46">
+                        {dispStart}–{dispEnd === "24:00" ? "24:00(익일)" : dispEnd}
+                      </span>{" "}
+                      <span className="text-c-54615A">
+                        {b.userName} · {b.purpose}
                       </span>
-                    )}
-                    {b.seriesId && (
-                      <span className="ml-1 text-[10px] font-bold text-c-2A5C8A">[매주반복]</span>
-                    )}
-                    {b.status === "pending" && (
-                      <span className="ml-1 text-[10px] font-bold text-c-6B5A2E">[승인대기]</span>
-                    )}
+                      {multiDay && (
+                        <span className="ml-1 text-[10px] font-bold text-c-C88A2D">
+                          [{fmtDate(b.date)}~{fmtDate(b.endDate)}]
+                        </span>
+                      )}
+                      {b.seriesId && (
+                        <span className="ml-1 text-[10px] font-bold text-c-2A5C8A">[매주반복]</span>
+                      )}
+                      {b.status === "pending" && (
+                        <span className="ml-1 text-[10px] font-bold text-c-6B5A2E">[승인대기]</span>
+                      )}
+                    </div>
                   </div>
-                  {showContact && b.phone && (
-                    <div className="flex gap-1.5 shrink-0 ml-2">
-                      <a href={`tel:${b.phone}`} className="px-2 py-1 rounded-lg bg-c-1F5C46 text-white text-xs font-bold">
-                        전화
-                      </a>
-                      <a href={`sms:${b.phone}`} className="px-2 py-1 rounded-lg bg-c-C88A2D text-white text-xs font-bold">
-                        문자
-                      </a>
+                  {(showContact || onEdit || onDelete) && (
+                    <div className="flex gap-1.5 mt-1.5">
+                      {showContact && b.phone && (
+                        <>
+                          <a href={`tel:${b.phone}`} className="px-2 py-1 rounded-lg bg-c-1F5C46 text-white text-xs font-bold">
+                            전화
+                          </a>
+                          <a href={`sms:${b.phone}`} className="px-2 py-1 rounded-lg bg-c-C88A2D text-white text-xs font-bold">
+                            문자
+                          </a>
+                        </>
+                      )}
+                      {onEdit && (
+                        <button onClick={() => onEdit(b)} className="px-2 py-1 rounded-lg bg-c-C88A2D text-white text-xs font-bold">
+                          수정
+                        </button>
+                      )}
+                      {onDelete && (
+                        <button onClick={() => onDelete(b)} className="px-2 py-1 rounded-lg border border-c-B5443C text-c-B5443C text-xs font-bold">
+                          삭제
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -461,11 +487,6 @@ export default function App() {
     const nextBookings = latest.bookings.map((x) => (x.id === b.id ? { ...x, status: "approved", adminNote: null } : x));
     await persist({ ...latest, bookings: nextBookings });
     showToast("승인되었습니다.");
-
-    if (b.phone) {
-      const v = latest.vehicles.find((x) => x.id === b.vehicleId);
-      sendSms(b.phone, `[초청교회 배차] ${v?.name || "차량"} ${b.date} ${b.start} 신청이 승인되었습니다.`);
-    }
   };
 
   const rejectBooking = async (b, note) => {
@@ -477,12 +498,12 @@ export default function App() {
     const nextBookings = latest.bookings.map((x) => (x.id === b.id ? { ...x, status: "rejected", adminNote: note || null } : x));
     await persist({ ...latest, bookings: nextBookings });
     showToast("반려되었습니다.");
+  };
 
-    if (b.phone) {
-      const v = latest.vehicles.find((x) => x.id === b.vehicleId);
-      const noteText = note ? ` (사유: ${note})` : "";
-      sendSms(b.phone, `[초청교회 배차] ${v?.name || "차량"} ${b.date} ${b.start} 신청이 반려되었습니다.${noteText}`);
-    }
+  const changeVehicleColor = async (vId, color) => {
+    const nextVehicles = vehicles.map((v) => (v.id === vId ? { ...v, color } : v));
+    await persist({ ...data, vehicles: nextVehicles });
+    showToast("색상이 변경되었습니다.");
   };
 
   if (!data)
@@ -499,7 +520,6 @@ export default function App() {
     const [id, setId] = useState("");
     const [pw, setPw] = useState("");
     const [remember, setRemember] = useState(false);
-    const [adminMode, setAdminMode] = useState(false);
 
     const login = () => {
       const u = users.find((x) => x.id === id.trim() && x.pw === pw);
@@ -518,13 +538,11 @@ export default function App() {
           <div className="text-center mb-8">
             <div className="text-4xl mb-2">⛪</div>
             <h1 className="text-2xl font-extrabold text-c-1F5C46 tracking-tight">초청교회 배차 신청</h1>
-            <p className="text-sm text-c-7C877F mt-1">
-              {adminMode ? "관리자 모드로 로그인합니다" : "차량 운행을 신청하고 확인하세요"}
-            </p>
+            <p className="text-sm text-c-7C877F mt-1">차량 운행을 신청하고 확인하세요</p>
           </div>
           <div className="bg-white rounded-2xl p-5 shadow-sm">
-            <Field label={adminMode ? "관리자 아이디" : "아이디 (핸드폰번호)"}>
-              <input className={inputCls} value={id} onChange={(e) => setId(e.target.value)} placeholder={adminMode ? "admin" : "01012345678"} />
+            <Field label="아이디 (핸드폰번호)">
+              <input className={inputCls} value={id} onChange={(e) => setId(e.target.value)} placeholder="01012345678" />
             </Field>
             <Field label="비밀번호">
               <input className={inputCls} type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && login()} />
@@ -536,14 +554,9 @@ export default function App() {
             <Btn full onClick={login}>
               로그인
             </Btn>
-            <div className="flex gap-2 mt-3">
-              {!adminMode && (
-                <Btn full kind="ghost" onClick={() => setView("signup")}>
-                  회원가입
-                </Btn>
-              )}
-              <Btn full kind="soft" onClick={() => setAdminMode((v) => !v)}>
-                {adminMode ? "일반 로그인" : "관리자 모드"}
+            <div className="mt-3">
+              <Btn full kind="ghost" onClick={() => setView("signup")}>
+                회원가입
               </Btn>
             </div>
           </div>
@@ -601,6 +614,14 @@ export default function App() {
       <div className="font-extrabold">{title}</div>
       <div className="flex items-center gap-3 text-sm">
         <span className="opacity-80">{user?.name}님</span>
+        {user?.isAdmin && (
+          <button
+            className="underline opacity-90"
+            onClick={() => setView(view === "admin" ? "main" : "admin")}
+          >
+            {view === "admin" ? "일반 모드로" : "관리자 모드로"}
+          </button>
+        )}
         <button
           className="underline opacity-90"
           onClick={() => {
@@ -760,8 +781,8 @@ export default function App() {
       if (conflictDate)
         return showToast(`${fmtDate(conflictDate.date)}에 이미 승인된 배차가 있습니다. 날짜나 차량을 확인해 주세요.`);
 
-      // 관리자가 만들면 바로 승인, 운전자가 만들면 승인 대기.
-      // 운전자가 기존(승인됨 포함) 예약을 수정하면 내용이 바뀌었으니 다시 승인 대기로 돌립니다.
+      // 관리자가 만들거나 수정하면 바로 승인 처리됩니다.
+      // 운전자가 신규 신청하면 승인 대기, 운전자가 기존 예약을 수정하면 내용이 바뀌었으니 다시 승인 대기로 돌립니다.
       const status = user.isAdmin ? "approved" : "pending";
       const seriesId = recurring && occurrences.length > 1 ? uid() : null;
       const baseRec = {
@@ -770,7 +791,10 @@ export default function App() {
         purpose: purpose.trim(),
         destination: destination.trim(),
         passengers: Number(passengers),
-        userId: user.id, userName: user.name, phone: user.isAdmin ? "" : user.id,
+        // 수정하는 경우 원래 신청자(운전자) 정보를 그대로 유지합니다 (관리자가 대신 수정해도 신청자는 바뀌지 않음)
+        userId: e ? e.userId : user.id,
+        userName: e ? e.userName : user.name,
+        phone: e ? e.phone : (user.isAdmin ? "" : user.id),
         pre: null, post: null,
         createdAt: Date.now(),
         seriesId,
@@ -793,16 +817,6 @@ export default function App() {
         : [...latest.bookings, ...newRecords];
       await persist({ ...latest, bookings: nextBookings });
       setModal({ type: "saved", payload: { count: newRecords.length } });
-
-      // 운전자가 새로 신청(대기중)하면 차량국장(관리자)에게 문자로 알립니다.
-      if (!user.isAdmin && status === "pending" && settings.managerPhone) {
-        const v = vehicles.find((x) => x.id === vehicleId);
-        const countText = newRecords.length > 1 ? ` 외 ${newRecords.length - 1}건(매주반복)` : "";
-        sendSms(
-          settings.managerPhone,
-          `[초청교회 배차] 새 신청: ${v?.name || "차량"} ${startDate} ${start} · ${user.name}${countText}`
-        );
-      }
     };
 
     return (
@@ -932,7 +946,7 @@ export default function App() {
           )}
 
           <div className="flex gap-2">
-            <Btn full kind="soft" onClick={() => setView(e ? "myList" : "main")}>
+            <Btn full kind="soft" onClick={() => setView(user.isAdmin ? "admin" : e ? "myList" : "main")}>
               취소
             </Btn>
             <Btn full onClick={save}>
@@ -1059,11 +1073,6 @@ export default function App() {
       showToast("차량이 추가되었습니다.");
     };
 
-    const changeVehicleColor = async (vId, color) => {
-      const nextVehicles = vehicles.map((v) => (v.id === vId ? { ...v, color } : v));
-      await persist({ ...data, vehicles: nextVehicles });
-    };
-
     const saveAdminAccount = async () => {
       const me = users.find((u) => u.id === user.id);
       if (!me || me.pw !== curPw) return showToast("현재 비밀번호가 일치하지 않습니다.");
@@ -1106,6 +1115,7 @@ export default function App() {
               ["approval", `승인 대기${bookings.filter((b) => b.status === "pending").length > 0 ? ` (${bookings.filter((b) => b.status === "pending").length})` : ""}`],
               ["calendar", "배차 현황"],
               ["status", "차량 상태"],
+              ["log", "운행 기록"],
               ["vehicles", "차량 관리"],
               ["users", "운전자 관리"],
               ["settings", "계정 설정"],
@@ -1176,7 +1186,14 @@ export default function App() {
               <MonthCalendar bookings={bookings} vehicles={vehicles} selected={selDate} onSelectDate={setSelDate} />
               <div>
                 <h3 className="font-bold text-c-23302B mb-2 px-1">{fmtDate(selDate)} 시간대별 현황</h3>
-                <DayTimeline date={selDate} bookings={bookings} vehicles={vehicles} showContact={true} />
+                <DayTimeline
+                  date={selDate}
+                  bookings={bookings}
+                  vehicles={vehicles}
+                  showContact={true}
+                  onEdit={(b) => { setEditBooking(b); setView("request"); }}
+                  onDelete={(b) => setModal({ type: "confirmDelete", payload: b })}
+                />
               </div>
             </div>
           )}
@@ -1214,10 +1231,19 @@ export default function App() {
                   .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))[0];
 
                 return (
-                  <div key={v.id} className="bg-white rounded-2xl p-4 shadow-sm">
+                  <div
+                    key={v.id}
+                    className="rounded-2xl p-4 shadow-sm border-l-8"
+                    style={{ borderLeftColor: v.color || "#1F5C46", backgroundColor: tintBg(v.color) }}
+                  >
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: v.color || "#1F5C46" }} />
-                      <div className="font-extrabold text-c-23302B">{v.name}</div>
+                      <span
+                        className="w-4 h-4 rounded-full inline-block border border-c-D6DED6"
+                        style={{ backgroundColor: v.color || "#1F5C46" }}
+                      />
+                      <div className="font-extrabold" style={{ color: v.color === "#FFFFFF" ? "#23302B" : (v.color || "#1F5C46") }}>
+                        {v.name}
+                      </div>
                       <span className="text-xs text-c-7C877F">{v.plate}</span>
                       <span className="ml-auto">
                         {current ? (
@@ -1242,6 +1268,11 @@ export default function App() {
                       <div className="text-sm text-c-23302B mb-2">
                         {fmtDate(latest.endDate || latest.date)} · {latestInfo.km || "-"}km · 연료 {latestInfo.fuel || "-"}%
                         {latest.post?.refuel && <span className="ml-1 text-c-2A5C8A font-bold">(주유함)</span>}
+                        {latest.post?.memo && (
+                          <div className="mt-1 text-xs text-c-B5443C bg-c-FBF4E4 rounded-lg p-1.5">
+                            📝 {latest.post.memo}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-sm text-c-A9B2AA mb-2">기록 없음</div>
@@ -1258,6 +1289,81 @@ export default function App() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {tab === "log" && (
+            <div className="space-y-3">
+              {bookings.filter((b) => b.pre || b.post).length === 0 && (
+                <div className="bg-white rounded-xl p-6 text-center text-sm text-c-7C877F">
+                  아직 입력된 운행 기록이 없습니다.
+                </div>
+              )}
+              {bookings
+                .filter((b) => b.pre || b.post)
+                .sort((a, b) => (b.endDate || b.date) + b.end < (a.endDate || a.date) + a.end ? -1 : 1)
+                .map((b) => {
+                  const v = vehicles.find((x) => x.id === b.vehicleId);
+                  const hasMemo = !!b.post?.memo;
+                  return (
+                    <div
+                      key={b.id}
+                      className="rounded-2xl p-4 shadow-sm border-l-8"
+                      style={{
+                        borderLeftColor: v?.color || "#1F5C46",
+                        backgroundColor: tintBg(v?.color),
+                        outline: hasMemo ? "2px solid #B5443C" : "none",
+                      }}
+                    >
+                      <div className="flex justify-between items-start mb-1">
+                        <div
+                          className="font-extrabold flex items-center gap-1.5"
+                          style={{ color: v?.color === "#FFFFFF" ? "#23302B" : (v?.color || "#1F5C46") }}
+                        >
+                          <span
+                            className="w-3 h-3 rounded-full inline-block border border-c-D6DED6"
+                            style={{ backgroundColor: v?.color || "#1F5C46" }}
+                          />
+                          {v?.name || "차량"}
+                        </div>
+                        <div className="text-sm text-c-54615A text-right">
+                          {fmtDate(b.date)}{b.endDate && b.endDate !== b.date ? `~${fmtDate(b.endDate)}` : ""} · {b.start}–{b.end}
+                        </div>
+                      </div>
+                      <div className="text-sm text-c-54615A mb-2">
+                        운전자: {b.userName} · {b.purpose} → {b.destination}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div className="bg-c-EDF1EC rounded-lg p-2">
+                          <div className="text-xs text-c-7C877F mb-0.5">운행전</div>
+                          {b.pre ? (
+                            <div className="text-c-23302B">{b.pre.km || "-"}km · 연료 {b.pre.fuel || "-"}%</div>
+                          ) : (
+                            <div className="text-c-A9B2AA">미입력</div>
+                          )}
+                        </div>
+                        <div className="bg-c-EDF1EC rounded-lg p-2">
+                          <div className="text-xs text-c-7C877F mb-0.5">운행후</div>
+                          {b.post ? (
+                            <div className="text-c-23302B">
+                              {b.post.km || "-"}km · 연료 {b.post.fuel || "-"}%
+                              {b.post.refuel && <span className="ml-1 text-c-2A5C8A font-bold">(주유)</span>}
+                            </div>
+                          ) : (
+                            <div className="text-c-A9B2AA">미입력</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {hasMemo && (
+                        <div className="mt-2 text-sm text-c-B5443C bg-c-FBF4E4 rounded-lg p-2 font-semibold">
+                          📝 특이사항: {b.post.memo}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
             </div>
           )}
 
@@ -1286,7 +1392,10 @@ export default function App() {
                 <div key={v.id} className="bg-white rounded-xl p-3 shadow-sm">
                   <div className="flex justify-between items-center mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="w-3 h-3 rounded-full inline-block" style={{ backgroundColor: v.color || "#1F5C46" }} />
+                      <span
+                        className="w-4 h-4 rounded-full inline-block border border-c-D6DED6"
+                        style={{ backgroundColor: v.color || "#1F5C46" }}
+                      />
                       <div>
                         <div className="font-bold text-sm">{v.name}</div>
                         <div className="text-xs text-c-7C877F">{v.plate} · {v.capacity}인승</div>
@@ -1296,16 +1405,9 @@ export default function App() {
                       삭제
                     </Btn>
                   </div>
-                  <div className="flex gap-1.5">
-                    {VEHICLE_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => changeVehicleColor(v.id, c)}
-                        className="w-5 h-5 rounded-full border-2"
-                        style={{ backgroundColor: c, borderColor: v.color === c ? "#23302B" : "transparent" }}
-                      />
-                    ))}
-                  </div>
+                  <Btn small kind="soft" onClick={() => setModal({ type: "colorPicker", payload: v })}>
+                    🎨 색상 변경
+                  </Btn>
                 </div>
               ))}
             </div>
@@ -1395,8 +1497,9 @@ export default function App() {
     if (modal.type === "saved") {
       const cnt = modal.payload?.count || 1;
       const isApproved = user.isAdmin;
+      const goBack = () => { setModal(null); setEditBooking(null); setView(user.isAdmin ? "admin" : "main"); };
       return (
-        <Modal onClose={() => { setModal(null); setEditBooking(null); setView("main"); }}>
+        <Modal onClose={goBack}>
           <div className="text-center py-2">
             <div className="text-4xl mb-2">{isApproved ? "✅" : "⏳"}</div>
             <div className="font-extrabold text-lg text-c-23302B mb-1">
@@ -1409,7 +1512,7 @@ export default function App() {
                   : "신청현황에서 언제든 확인·수정할 수 있습니다."
                 : `관리자 승인 후 배차가 확정됩니다. ${cnt > 1 ? `총 ${cnt}건이 ` : ""}신청현황에서 승인 상태를 확인할 수 있습니다.`}
             </p>
-            <Btn full onClick={() => { setModal(null); setEditBooking(null); setView("main"); }}>확인</Btn>
+            <Btn full onClick={goBack}>확인</Btn>
           </div>
         </Modal>
       );
@@ -1420,7 +1523,7 @@ export default function App() {
         <Modal onClose={() => setModal(null)}>
           <div className="font-extrabold text-lg text-c-23302B mb-2">신청을 삭제할까요?</div>
           <p className="text-sm text-c-54615A mb-4">
-            {b.date} {b.start}–{b.end} 운행신청이 삭제되며 되돌릴 수 없습니다.
+            {b.userName}님의 {b.date} {b.start}–{b.end} 운행신청이 삭제되며 되돌릴 수 없습니다.
           </p>
           <div className="flex gap-2">
             <Btn full kind="soft" onClick={() => setModal(null)}>취소</Btn>
@@ -1444,6 +1547,42 @@ export default function App() {
               setModal(null); showToast("차량이 삭제되었습니다.");
             }}>삭제</Btn>
           </div>
+        </Modal>
+      );
+
+    if (modal.type === "colorPicker")
+      return (
+        <Modal onClose={() => setModal(null)}>
+          <div className="font-extrabold text-lg mb-1 text-c-23302B">{b.name} 색상 선택</div>
+          <p className="text-sm text-c-7C877F mb-4">원하는 색상을 눌러주세요.</p>
+          <div className="grid grid-cols-5 gap-3 mb-2">
+            {VEHICLE_COLORS.map((c) => (
+              <button
+                key={c.hex}
+                onClick={async () => {
+                  await changeVehicleColor(b.id, c.hex);
+                  setModal(null);
+                }}
+                className="flex flex-col items-center gap-1"
+              >
+                <span
+                  className="w-11 h-11 rounded-full border-2 flex items-center justify-center"
+                  style={{
+                    backgroundColor: c.hex,
+                    borderColor: b.color === c.hex ? "#1F5C46" : "#D6DED6",
+                  }}
+                >
+                  {b.color === c.hex && (
+                    <span style={{ color: c.hex === "#FFFFFF" || c.hex === "#FACC15" ? "#23302B" : "#FFFFFF" }} className="font-bold text-lg">
+                      ✓
+                    </span>
+                  )}
+                </span>
+                <span className="text-[11px] text-c-54615A">{c.name}</span>
+              </button>
+            ))}
+          </div>
+          <Btn full kind="soft" onClick={() => setModal(null)}>닫기</Btn>
         </Modal>
       );
 
