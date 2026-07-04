@@ -1,0 +1,6 @@
+윈도우 powershell에서
+
+cd $HOME\Downloads\church-car-app
+git add .
+git status
+git push

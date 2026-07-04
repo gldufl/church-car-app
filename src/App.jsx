@@ -342,6 +342,7 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [modal, setModal] = useState(null); // {type, payload}
   const [selDate, setSelDate] = useState(todayStr());
+  const [adminTab, setAdminTab] = useState("approval"); // approval | calendar | status | log | vehicles | users | settings
   const [editBooking, setEditBooking] = useState(null);
   const [reminderBanner, setReminderBanner] = useState(null); // 5분 전 알림 대상 예약
   const notifiedRef = useRef(new Set()); // 중복 알림 방지
@@ -504,6 +505,12 @@ export default function App() {
     const nextVehicles = vehicles.map((v) => (v.id === vId ? { ...v, color } : v));
     await persist({ ...data, vehicles: nextVehicles });
     showToast("색상이 변경되었습니다.");
+  };
+
+  const updateVehicleInfo = async (vId, info) => {
+    const nextVehicles = vehicles.map((v) => (v.id === vId ? { ...v, ...info } : v));
+    await persist({ ...data, vehicles: nextVehicles });
+    showToast("차량 정보가 수정되었습니다.");
   };
 
   if (!data)
@@ -1038,7 +1045,7 @@ export default function App() {
 
   /* ── 관리자 페이지 ── */
   const AdminPage = () => {
-    const [tab, setTab] = useState("approval"); // approval | calendar | status | vehicles | users | settings
+    // 탭 상태(adminTab)는 App 최상위에서 관리합니다 (재렌더링에도 유지되도록)
     const [vName, setVName] = useState("");
     const [vPlate, setVPlate] = useState("");
     const [vCap, setVCap] = useState("");
@@ -1122,9 +1129,9 @@ export default function App() {
             ].map(([k, label]) => (
               <button
                 key={k}
-                onClick={() => setTab(k)}
+                onClick={() => setAdminTab(k)}
                 className={`shrink-0 whitespace-nowrap px-3 py-2 rounded-xl text-xs font-bold ${
-                  tab === k ? "bg-c-1F5C46 text-white" : "bg-white text-c-54615A"
+                  adminTab === k ? "bg-c-1F5C46 text-white" : "bg-white text-c-54615A"
                 }`}
               >
                 {label}
@@ -1132,7 +1139,7 @@ export default function App() {
             ))}
           </div>
 
-          {tab === "approval" && (
+          {adminTab === "approval" && (
             <div className="space-y-3">
               {bookings.filter((b) => b.status === "pending").length === 0 && (
                 <div className="bg-white rounded-xl p-6 text-center text-sm text-c-7C877F">
@@ -1181,7 +1188,7 @@ export default function App() {
             </div>
           )}
 
-          {tab === "calendar" && (
+          {adminTab === "calendar" && (
             <div className="space-y-4">
               <MonthCalendar bookings={bookings} vehicles={vehicles} selected={selDate} onSelectDate={setSelDate} />
               <div>
@@ -1198,7 +1205,7 @@ export default function App() {
             </div>
           )}
 
-          {tab === "status" && (
+          {adminTab === "status" && (
             <div className="space-y-3">
               {vehicles.map((v) => {
                 const now = new Date();
@@ -1292,7 +1299,7 @@ export default function App() {
             </div>
           )}
 
-          {tab === "log" && (
+          {adminTab === "log" && (
             <div className="space-y-3">
               {bookings.filter((b) => b.pre || b.post).length === 0 && (
                 <div className="bg-white rounded-xl p-6 text-center text-sm text-c-7C877F">
@@ -1367,8 +1374,41 @@ export default function App() {
             </div>
           )}
 
-          {tab === "vehicles" && (
+          {adminTab === "vehicles" && (
             <div className="space-y-3">
+              {vehicles.length === 0 && (
+                <div className="bg-white rounded-xl p-6 text-center text-sm text-c-7C877F">
+                  등록된 차량이 없습니다. 아래에서 추가해 주세요.
+                </div>
+              )}
+              {vehicles.map((v) => (
+                <div key={v.id} className="bg-white rounded-xl p-3 shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-4 h-4 rounded-full inline-block border border-c-D6DED6"
+                        style={{ backgroundColor: v.color || "#1F5C46" }}
+                      />
+                      <div>
+                        <div className="font-bold text-sm">{v.name}</div>
+                        <div className="text-xs text-c-7C877F">{v.plate} · {v.capacity}인승</div>
+                      </div>
+                    </div>
+                    <Btn small kind="danger" onClick={() => setModal({ type: "confirmDeleteVehicle", payload: v })}>
+                      삭제
+                    </Btn>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <Btn small kind="soft" onClick={() => setModal({ type: "colorPicker", payload: v })}>
+                      🎨 색상 변경
+                    </Btn>
+                    <Btn small kind="amber" onClick={() => setModal({ type: "editVehicle", payload: v })}>
+                      ✏️ 정보 수정
+                    </Btn>
+                  </div>
+                </div>
+              ))}
+
               <div className="bg-white rounded-2xl p-4 shadow-sm">
                 <h3 className="font-bold mb-3 text-c-23302B">차량 추가</h3>
                 <Field label="차량 이름">
@@ -1388,32 +1428,10 @@ export default function App() {
                 </div>
                 <Btn full onClick={addVehicle}>차량 추가</Btn>
               </div>
-              {vehicles.map((v) => (
-                <div key={v.id} className="bg-white rounded-xl p-3 shadow-sm">
-                  <div className="flex justify-between items-center mb-2">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="w-4 h-4 rounded-full inline-block border border-c-D6DED6"
-                        style={{ backgroundColor: v.color || "#1F5C46" }}
-                      />
-                      <div>
-                        <div className="font-bold text-sm">{v.name}</div>
-                        <div className="text-xs text-c-7C877F">{v.plate} · {v.capacity}인승</div>
-                      </div>
-                    </div>
-                    <Btn small kind="danger" onClick={() => setModal({ type: "confirmDeleteVehicle", payload: v })}>
-                      삭제
-                    </Btn>
-                  </div>
-                  <Btn small kind="soft" onClick={() => setModal({ type: "colorPicker", payload: v })}>
-                    🎨 색상 변경
-                  </Btn>
-                </div>
-              ))}
             </div>
           )}
 
-          {tab === "users" && (
+          {adminTab === "users" && (
             <div className="space-y-2">
               {users.length === 0 && (
                 <div className="bg-white rounded-xl p-6 text-center text-sm text-c-7C877F">가입한 사용자가 없습니다.</div>
@@ -1448,7 +1466,7 @@ export default function App() {
             </div>
           )}
 
-          {tab === "settings" && (
+          {adminTab === "settings" && (
             <div className="bg-white rounded-2xl p-4 shadow-sm">
               <h3 className="font-bold mb-1 text-c-23302B">관리자 계정 설정</h3>
               <p className="text-xs text-c-7C877F mb-3">현재 아이디: <span className="font-bold">{user.id}</span></p>
@@ -1471,7 +1489,7 @@ export default function App() {
             </div>
           )}
 
-          {tab === "settings" && (
+          {adminTab === "settings" && (
             <div className="bg-white rounded-2xl p-4 shadow-sm mt-3">
               <h3 className="font-bold mb-3 text-c-23302B">차량국장 연락처</h3>
               <Field label="이름/직책">
@@ -1619,6 +1637,10 @@ export default function App() {
       return <EditUserModal u={b} />;
     }
 
+    if (modal.type === "editVehicle") {
+      return <EditVehicleModal v={b} />;
+    }
+
     if (modal.type === "confirmReject") {
       return <RejectModal b={b} />;
     }
@@ -1679,6 +1701,39 @@ export default function App() {
             await persist({ ...data, users: nextUsers, bookings: nextBookings });
             setModal(null); showToast("수정되었습니다.");
           }}>저장</Btn>
+        </div>
+      </Modal>
+    );
+  };
+
+  const EditVehicleModal = ({ v }) => {
+    const [name, setName] = useState(v.name);
+    const [plate, setPlate] = useState(v.plate);
+    const [capacity, setCapacity] = useState(v.capacity);
+    return (
+      <Modal onClose={() => setModal(null)}>
+        <div className="font-extrabold text-lg mb-3 text-c-23302B">차량 정보 수정</div>
+        <Field label="차량 이름">
+          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="1호차 스타렉스" />
+        </Field>
+        <Field label="차량번호">
+          <input className={inputCls} value={plate} onChange={(e) => setPlate(e.target.value)} placeholder="12가 3456" />
+        </Field>
+        <Field label="인승">
+          <input type="number" className={inputCls} value={capacity} onChange={(e) => setCapacity(e.target.value)} placeholder="12" />
+        </Field>
+        <div className="flex gap-2">
+          <Btn full kind="soft" onClick={() => setModal(null)}>취소</Btn>
+          <Btn
+            full
+            onClick={async () => {
+              if (!name.trim()) return showToast("차량 이름을 입력해 주세요.");
+              await updateVehicleInfo(v.id, { name: name.trim(), plate: plate.trim(), capacity: Number(capacity) || 0 });
+              setModal(null);
+            }}
+          >
+            저장
+          </Btn>
         </div>
       </Modal>
     );
