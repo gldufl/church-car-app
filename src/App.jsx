@@ -1018,16 +1018,12 @@ export default function App() {
                   {b.purpose} → {b.destination} · {b.passengers}명
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {b.status === "approved" && (
-                    <>
-                      <Btn small kind={b.pre ? "soft" : "ghost"} onClick={() => setModal({ type: "pre", payload: b })}>
-                        운행전정보{b.pre ? " ✓" : ""}
-                      </Btn>
-                      <Btn small kind={b.post ? "soft" : "ghost"} onClick={() => setModal({ type: "post", payload: b })}>
-                        운행후정보{b.post ? " ✓" : ""}
-                      </Btn>
-                    </>
-                  )}
+                  <Btn small kind={b.pre ? "soft" : "ghost"} onClick={() => setModal({ type: "pre", payload: b })}>
+                    운행전정보{b.pre ? " ✓" : ""}
+                  </Btn>
+                  <Btn small kind={b.post ? "soft" : "ghost"} onClick={() => setModal({ type: "post", payload: b })}>
+                    운행후정보{b.post ? " ✓" : ""}
+                  </Btn>
                   <Btn small kind="amber" onClick={() => { setEditBooking(b); setView("request"); }}>
                     수정
                   </Btn>
