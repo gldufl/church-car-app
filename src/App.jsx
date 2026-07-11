@@ -1208,10 +1208,13 @@ export default function App() {
                 const nowStr = todayStr();
                 const nowHM = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
 
-                const vBookings = bookings.filter((b) => b.vehicleId === v.id && b.status === "approved");
+                // 현재 사용중/다음 예정은 승인된 예약만 기준으로 판단
+                const vBookingsApproved = bookings.filter((b) => b.vehicleId === v.id && b.status === "approved");
+                // 최신 키로수·연료는 운전자가 입력한 모든 기록(승인 대기/반려 포함)에서 찾습니다
+                const vBookingsAll = bookings.filter((b) => b.vehicleId === v.id);
 
                 // 현재 사용중인지 (오늘 날짜가 구간에 포함되고, 첫날이면 start~, 마지막날이면 ~end, 중간날이면 종일 사용중으로 간주)
-                const current = vBookings.find((b) => {
+                const current = vBookingsApproved.find((b) => {
                   if (!dateInBookingRange(nowStr, b)) return false;
                   const isFirst = nowStr === b.date;
                   const isLast = nowStr === (b.endDate || b.date);
@@ -1220,16 +1223,21 @@ export default function App() {
                   return nowHM >= from && nowHM <= to;
                 });
 
-                // 가장 최근 운행 기록 (운행후정보 우선, 없으면 운행전정보)
-                const past = vBookings
+                // 가장 최근 운행 기록 (운행후정보 우선, 없으면 운행전정보) - 날짜/시간이 같으면 최근에 입력한 순서로
+                const past = vBookingsAll
                   .filter((b) => b.post || b.pre)
-                  .sort((a, b) => (b.endDate || b.date) + b.end < (a.endDate || a.date) + a.end ? -1 : 1);
+                  .sort((a, b) => {
+                    const aKey = (a.endDate || a.date) + a.end;
+                    const bKey = (b.endDate || b.date) + b.end;
+                    if (aKey !== bKey) return aKey < bKey ? 1 : -1;
+                    return (b.createdAt || 0) - (a.createdAt || 0);
+                  });
                 const latest = past[0];
                 const latestInfo = latest?.post || latest?.pre;
                 const latestType = latest?.post ? "운행후" : latest?.pre ? "운행전" : null;
 
                 // 다음 예정
-                const upcoming = vBookings
+                const upcoming = vBookingsApproved
                   .filter((b) => b.date + b.start > nowStr + nowHM)
                   .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))[0];
 
