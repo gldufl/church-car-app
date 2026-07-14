@@ -1,4 +1,4 @@
-// 신청/승인/반려 시점에 Supabase Edge Function(send-sms)을 호출해 문자를 보냅니다.
+// 신청/승인 시점에 Supabase Edge Function(send-sms)을 호출해 문자를 보냅니다.
 // 문자 발송이 실패해도 배차 신청/승인 자체는 계속 진행되어야 하므로,
 // 이 함수는 에러를 던지지 않고 콘솔에만 남깁니다.
 

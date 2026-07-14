@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { storage } from "./storage";
+import { sendSms } from "./sms";
 
 /* ─────────────────────────────────────────────
    초청교회 배차 신청
@@ -37,14 +38,14 @@ const tintBg = (hex, alpha = 0.12) => {
 };
 
 const SEED = {
-  users: [{ id: "admin", name: "관리자", pw: "0000", isAdmin: true }],
+  users: [{ id: "admin", name: "관리자", pw: "0000", isAdmin: true, phone: "" }],
   vehicles: [
     { id: "v1", name: "1호차 스타렉스", plate: "12가 3456", capacity: 12, color: colorForIndex(0) },
     { id: "v2", name: "2호차 카니발", plate: "34나 5678", capacity: 9, color: colorForIndex(1) },
     { id: "v3", name: "3호차 카운티", plate: "56다 7890", capacity: 25, color: colorForIndex(2) },
   ],
   bookings: [],
-  settings: { managerName: "차량국장", managerPhone: "010-8641-2350" },
+  settings: { managerName: "차량국장", managerPhone: "010-8641-2350", smsRecipients: [] },
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -488,6 +489,13 @@ export default function App() {
     const nextBookings = latest.bookings.map((x) => (x.id === b.id ? { ...x, status: "approved", adminNote: null } : x));
     await persist({ ...latest, bookings: nextBookings });
     showToast("승인되었습니다.");
+
+    if (b.phone) {
+      sendSms(
+        b.phone,
+        "[배차 신청이 수락되었습니다] 안전하게 운행하시기 바라며 운행 전/후 차량 정보를 꼭 기록해 주세요."
+      );
+    }
   };
 
   const rejectBooking = async (b, note) => {
@@ -583,7 +591,7 @@ export default function App() {
       if (!name.trim() || p.length < 10 || pw.length < 4)
         return showToast("이름, 핸드폰번호, 비밀번호(4자 이상)를 확인해 주세요.");
       if (users.find((u) => u.id === p)) return showToast("이미 가입된 번호입니다.");
-      const nu = { id: p, name: name.trim(), pw, isAdmin: false };
+      const nu = { id: p, name: name.trim(), pw, isAdmin: false, phone: p };
       await persist({ ...data, users: [...users, nu] });
       showToast("가입 완료! 로그인해 주세요.");
       setView("login");
@@ -824,6 +832,15 @@ export default function App() {
         : [...latest.bookings, ...newRecords];
       await persist({ ...latest, bookings: nextBookings });
       setModal({ type: "saved", payload: { count: newRecords.length } });
+
+      // 운전자가 새로 신청(대기중)하면, 문자 수신을 선택한 관리자들에게 알립니다.
+      if (!e && !user.isAdmin) {
+        const recipientIds = latest.settings.smsRecipients || [];
+        const recipients = latest.users.filter((u) => recipientIds.includes(u.id) && u.phone);
+        recipients.forEach((r) => {
+          sendSms(r.phone, "[배차 신청이 들어왔습니다] 관리자 모드에서 승인/반려해 주세요.");
+        });
+      }
     };
 
     return (
@@ -1440,33 +1457,58 @@ export default function App() {
               {users.length === 0 && (
                 <div className="bg-white rounded-xl p-6 text-center text-sm text-c-7C877F">가입한 사용자가 없습니다.</div>
               )}
-              {users.map((u) => (
-                <div key={u.id} className="bg-white rounded-xl p-3 shadow-sm">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <div className="font-bold text-sm flex items-center gap-1.5">
-                        {u.name}
+              {users.map((u) => {
+                const isRecipient = (settings.smsRecipients || []).includes(u.id);
+                return (
+                  <div key={u.id} className="bg-white rounded-xl p-3 shadow-sm">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <div className="font-bold text-sm flex items-center gap-1.5">
+                          {u.name}
+                          {u.isAdmin && (
+                            <span className="text-[10px] font-bold bg-c-C88A2D text-white px-1.5 py-0.5 rounded-full">관리자</span>
+                          )}
+                          {u.id === user.id && <span className="text-[10px] text-c-7C877F">(나)</span>}
+                        </div>
+                        <div className="text-xs text-c-7C877F">{u.id}</div>
                         {u.isAdmin && (
-                          <span className="text-[10px] font-bold bg-c-C88A2D text-white px-1.5 py-0.5 rounded-full">관리자</span>
+                          <div className="text-xs text-c-7C877F">문자 수신 번호: {u.phone || "미등록"}</div>
                         )}
-                        {u.id === user.id && <span className="text-[10px] text-c-7C877F">(나)</span>}
                       </div>
-                      <div className="text-xs text-c-7C877F">{u.id}</div>
                     </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    <a href={`tel:${u.id}`} className="px-2.5 py-1.5 rounded-lg bg-c-1F5C46 text-white text-xs font-bold">전화</a>
-                    <a href={`sms:${u.id}`} className="px-2.5 py-1.5 rounded-lg bg-c-C88A2D text-white text-xs font-bold">문자</a>
-                    <Btn small kind="soft" onClick={() => setModal({ type: "editUser", payload: u })}>수정</Btn>
-                    {u.id !== user.id && (
-                      <Btn small kind={u.isAdmin ? "danger" : "ghost"} onClick={() => toggleAdminRole(u)}>
-                        {u.isAdmin ? "관리자 해제" : "관리자 지정"}
-                      </Btn>
+                    <div className="flex flex-wrap gap-1.5">
+                      <a href={`tel:${u.id}`} className="px-2.5 py-1.5 rounded-lg bg-c-1F5C46 text-white text-xs font-bold">전화</a>
+                      <a href={`sms:${u.id}`} className="px-2.5 py-1.5 rounded-lg bg-c-C88A2D text-white text-xs font-bold">문자</a>
+                      <Btn small kind="soft" onClick={() => setModal({ type: "editUser", payload: u })}>수정</Btn>
+                      {u.id !== user.id && (
+                        <Btn small kind={u.isAdmin ? "danger" : "ghost"} onClick={() => toggleAdminRole(u)}>
+                          {u.isAdmin ? "관리자 해제" : "관리자 지정"}
+                        </Btn>
+                      )}
+                      <Btn small kind="danger" onClick={() => setModal({ type: "confirmDeleteUser", payload: u })}>삭제</Btn>
+                    </div>
+                    {u.isAdmin && (
+                      <label className="flex items-center gap-2 mt-2 text-xs text-c-54615A">
+                        <input
+                          type="checkbox"
+                          checked={isRecipient}
+                          onChange={async () => {
+                            if (!isRecipient && !u.phone) {
+                              showToast("먼저 '수정'에서 문자 수신 번호를 등록해 주세요.");
+                              return;
+                            }
+                            const cur = settings.smsRecipients || [];
+                            const next = isRecipient ? cur.filter((id) => id !== u.id) : [...cur, u.id];
+                            await persist({ ...data, settings: { ...settings, smsRecipients: next } });
+                          }}
+                          className="w-4 h-4 accent-c-1F5C46"
+                        />
+                        🔔 새 배차 신청 문자 받기
+                      </label>
                     )}
-                    <Btn small kind="danger" onClick={() => setModal({ type: "confirmDeleteUser", payload: u })}>삭제</Btn>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -1686,23 +1728,29 @@ export default function App() {
 
   const EditUserModal = ({ u }) => {
     const [name, setName] = useState(u.name);
-    const [phone, setPhone] = useState(u.id);
+    const [phone, setPhone] = useState(u.isAdmin ? (u.phone || "") : u.id);
     return (
       <Modal onClose={() => setModal(null)}>
-        <div className="font-extrabold text-lg mb-3">운전자 정보 수정</div>
+        <div className="font-extrabold text-lg mb-3">{u.isAdmin ? "관리자 정보 수정" : "운전자 정보 수정"}</div>
         <Field label="이름">
           <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="핸드폰번호">
-          <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} />
+        <Field label={u.isAdmin ? "문자 수신 번호 (로그인 아이디는 계정 설정에서 변경)" : "핸드폰번호"}>
+          <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="01012345678" />
         </Field>
         <div className="flex gap-2">
           <Btn full kind="soft" onClick={() => setModal(null)}>취소</Btn>
           <Btn full onClick={async () => {
             const p = phone.replace(/[^0-9]/g, "");
-            const nextUsers = users.map((x) => (x.id === u.id ? { ...x, name: name.trim(), id: p } : x));
-            const nextBookings = bookings.map((bk) => (bk.userId === u.id ? { ...bk, userId: p, userName: name.trim(), phone: p } : bk));
-            await persist({ ...data, users: nextUsers, bookings: nextBookings });
+            if (u.isAdmin) {
+              // 관리자는 로그인 아이디는 그대로 두고, 이름과 문자 수신 번호만 수정합니다.
+              const nextUsers = users.map((x) => (x.id === u.id ? { ...x, name: name.trim(), phone: p } : x));
+              await persist({ ...data, users: nextUsers });
+            } else {
+              const nextUsers = users.map((x) => (x.id === u.id ? { ...x, name: name.trim(), id: p, phone: p } : x));
+              const nextBookings = bookings.map((bk) => (bk.userId === u.id ? { ...bk, userId: p, userName: name.trim(), phone: p } : bk));
+              await persist({ ...data, users: nextUsers, bookings: nextBookings });
+            }
             setModal(null); showToast("수정되었습니다.");
           }}>저장</Btn>
         </div>

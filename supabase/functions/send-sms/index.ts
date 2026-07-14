@@ -1,6 +1,5 @@
 // Supabase Edge Function: send-sms
 // 알리고(Aligo) SMS API를 호출해서 문자를 발송하는 공용 함수입니다.
-// 클라이언트(App.jsx)에서 신청/승인/반려 시점에 이 함수를 호출합니다.
 //
 // 필요한 Supabase 시크릿 (secrets):
 //   ALIGO_API_KEY   - 알리고에서 발급받은 API Key
